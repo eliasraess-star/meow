@@ -68,7 +68,8 @@ func main() {
 			getEndpoint(w, r, vk)
 		case http.MethodPost:
 			postEndpoint(w, r, *file, vk)
-		// TODO: support http.MethodDelete to delete endpoints
+		case http.MethodDelete:
+			deleteEndpoint(w, r, *file, vk)
 		default:
 			log.Printf("request from %s rejected: method %s not allowed",
 				r.RemoteAddr, r.Method)
@@ -148,6 +149,39 @@ func postEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey
 		status = http.StatusInternalServerError
 	}
 	cfg.mu.Unlock()
+	w.WriteHeader(status)
+}
+
+func deleteEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey.Client) {
+	log.Printf("DELETE %s from %s", r.URL, r.RemoteAddr)
+
+	identifier, err := extractEndpointIdentifier(r.URL.String())
+	if err != nil {
+		log.Printf("extract endpoint identifier of %s: %v", r.URL, err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Check existence first
+	cfg.mu.RLock()
+	_, exists := cfg.config[identifier]
+	cfg.mu.RUnlock()
+	if !exists {
+		log.Printf("no such endpoint %q", identifier)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	// Delete and persist
+	cfg.mu.Lock()
+	delete(cfg.config, identifier)
+	status := http.StatusNoContent
+	if err := writeConfig(cfg.config, file); err != nil {
+		log.Printf("write config: %v", err)
+		status = http.StatusInternalServerError
+	}
+	cfg.mu.Unlock()
+
 	w.WriteHeader(status)
 }
 
