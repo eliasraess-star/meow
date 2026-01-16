@@ -65,9 +65,9 @@ func main() {
 	http.HandleFunc("/endpoints/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			getEndpoint(w, r)
+			getEndpoint(w, r, vk)
 		case http.MethodPost:
-			postEndpoint(w, r, *file)
+			postEndpoint(w, r, *file, vk)
 		// TODO: support http.MethodDelete to delete endpoints
 		default:
 			log.Printf("request from %s rejected: method %s not allowed",
@@ -76,7 +76,7 @@ func main() {
 		}
 	})
 	http.HandleFunc("/endpoints", func(w http.ResponseWriter, r *http.Request) {
-		getEndpoints(w, r)
+		getEndpoints(w, r, vk)
 	})
 
 	listenTo := fmt.Sprintf("%s:%d", *addr, *port)
@@ -84,7 +84,7 @@ func main() {
 	http.ListenAndServe(listenTo, nil)
 }
 
-func getEndpoint(w http.ResponseWriter, r *http.Request) {
+func getEndpoint(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 	log.Printf("GET %s from %s", r.URL, r.RemoteAddr)
 	identifier, err := extractEndpointIdentifier(r.URL.String())
 	if err != nil {
@@ -109,7 +109,7 @@ func getEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func postEndpoint(w http.ResponseWriter, r *http.Request, file string) {
+func postEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey.Client) {
 	log.Printf("POST %s from %s", r.URL, r.RemoteAddr)
 	buf := bytes.NewBufferString("")
 	io.Copy(buf, r.Body)
@@ -151,7 +151,7 @@ func postEndpoint(w http.ResponseWriter, r *http.Request, file string) {
 	w.WriteHeader(status)
 }
 
-func getEndpoints(w http.ResponseWriter, r *http.Request) {
+func getEndpoints(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 	if r.Method != http.MethodGet {
 		log.Printf("request from %s rejected: method %s not allowed",
 			r.RemoteAddr, r.Method)
