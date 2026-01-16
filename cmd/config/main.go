@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"sync"
 
 	"github.com/patrickbucher/meow"
 	"github.com/valkey-io/valkey-go"
@@ -22,18 +20,9 @@ import (
 // Config maps the identifiers to endpoints.
 type Config map[string]*meow.Endpoint
 
-// ConcurrentConfig wraps the config together with a mutex.
-type ConcurrentConfig struct {
-	mu     sync.RWMutex
-	config Config
-}
-
-var cfg ConcurrentConfig
-
 func main() {
 	addr := flag.String("addr", "0.0.0.0", "listen to address")
 	port := flag.Uint("port", 8000, "listen on port")
-	file := flag.String("file", "config.csv", "CSV file to store the configuration")
 	flag.Parse()
 
 	log.SetOutput(os.Stderr)
@@ -60,26 +49,14 @@ func main() {
 	}
 	log.Printf("connected to valkey at %s", valkeyURL)
 
-	configFromValkey, err := fetchAllEndpoints(ctx, vk)
-	if err != nil {
-		log.Fatalf("load config from valkey: %v", err)
-	}
-	if len(configFromValkey) == 0 {
-		configFromValkey = mustReadConfig(*file)
-		if err := persistConfigToValkey(ctx, vk, configFromValkey); err != nil {
-			log.Fatalf("persist config to valkey: %v", err)
-		}
-	}
-	cfg.config = configFromValkey
-
 	http.HandleFunc("/endpoints/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			getEndpoint(w, r, vk)
 		case http.MethodPost:
-			postEndpoint(w, r, *file, vk)
+			postEndpoint(w, r, vk)
 		case http.MethodDelete:
-			deleteEndpoint(w, r, *file, vk)
+			deleteEndpoint(w, r, vk)
 		default:
 			log.Printf("request from %s rejected: method %s not allowed",
 				r.RemoteAddr, r.Method)
@@ -123,7 +100,7 @@ func getEndpoint(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 	w.Write(payload)
 }
 
-func postEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey.Client) {
+func postEndpoint(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 	log.Printf("POST %s from %s", r.URL, r.RemoteAddr)
 	buf := bytes.NewBufferString("")
 	io.Copy(buf, r.Body)
@@ -167,19 +144,10 @@ func postEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey
 		return
 	}
 
-	cfg.mu.Lock()
-	if cfg.config == nil {
-		cfg.config = make(Config)
-	}
-	cfg.config[endpoint.Identifier] = endpoint
-	if err := writeConfig(cfg.config, file); err != nil {
-		status = http.StatusInternalServerError
-	}
-	cfg.mu.Unlock()
 	w.WriteHeader(status)
 }
 
-func deleteEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valkey.Client) {
+func deleteEndpoint(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 	log.Printf("DELETE %s from %s", r.URL, r.RemoteAddr)
 
 	identifier, err := extractEndpointIdentifier(r.URL.String())
@@ -207,18 +175,7 @@ func deleteEndpoint(w http.ResponseWriter, r *http.Request, file string, vk valk
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
-	// Delete and persist
-	cfg.mu.Lock()
-	delete(cfg.config, identifier)
-	status := http.StatusNoContent
-	if err := writeConfig(cfg.config, file); err != nil {
-		log.Printf("write config: %v", err)
-		status = http.StatusInternalServerError
-	}
-	cfg.mu.Unlock()
-
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func getEndpoints(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
@@ -249,9 +206,6 @@ func getEndpoints(w http.ResponseWriter, r *http.Request, vk valkey.Client) {
 		}
 		payloads = append(payloads, payload)
 	}
-	cfg.mu.Lock()
-	cfg.config = config
-	cfg.mu.Unlock()
 	data, err := json.Marshal(payloads)
 	if err != nil {
 		log.Printf("serialize payloads: %v", err)
@@ -272,56 +226,6 @@ func extractEndpointIdentifier(endpoint string) (string, error) {
 			endpoint, endpointIdentifierPatternRaw)
 	}
 	return matches[1], nil
-}
-
-func writeConfig(config Config, configPath string) error {
-	file, err := os.Create(configPath)
-	if err != nil {
-		return fmt.Errorf(`open "%s" for write: %v`, configPath, err)
-	}
-
-	writer := csv.NewWriter(file)
-	defer file.Close()
-	for _, endpoint := range config {
-		record := []string{
-			endpoint.Identifier,
-			endpoint.URL.String(),
-			endpoint.Method,
-			strconv.Itoa(int(endpoint.StatusOnline)),
-			endpoint.Frequency.String(),
-			strconv.Itoa(int(endpoint.FailAfter)),
-		}
-		if err := writer.Write(record); err != nil {
-			return fmt.Errorf(`write endpoint "%s": %v`, endpoint, err)
-		}
-	}
-	writer.Flush()
-	return nil
-}
-
-func mustReadConfig(configPath string) Config {
-	file, err := os.Open(configPath)
-	if os.IsNotExist(err) {
-		// just start with an empty config
-		log.Printf(`the config file "%s" does not exist`, configPath)
-		return Config{}
-	}
-
-	config := make(Config, 0)
-	reader := csv.NewReader(file)
-	defer file.Close()
-	records, err := reader.ReadAll()
-	if err != nil {
-		log.Fatalf("the config file '%s' is malformed: %v", configPath, err)
-	}
-	for i, line := range records {
-		endpoint, err := meow.EndpointFromRecord(line)
-		if err != nil {
-			log.Fatalf(`line %d: "%s": %v`, i, line, err)
-		}
-		config[endpoint.Identifier] = endpoint
-	}
-	return config
 }
 
 const endpointKeyPrefix = "endpoints:"
@@ -384,15 +288,6 @@ func storeEndpoint(ctx context.Context, vk valkey.Client, endpoint *meow.Endpoin
 func deleteEndpointKey(ctx context.Context, vk valkey.Client, identifier string) error {
 	if err := vk.Do(ctx, vk.B().Del().Key(endpointKey(identifier)).Build()).Error(); err != nil {
 		return fmt.Errorf("delete endpoint %s: %w", identifier, err)
-	}
-	return nil
-}
-
-func persistConfigToValkey(ctx context.Context, vk valkey.Client, config Config) error {
-	for _, endpoint := range config {
-		if err := storeEndpoint(ctx, vk, endpoint); err != nil {
-			return err
-		}
 	}
 	return nil
 }
