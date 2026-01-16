@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"flag"
@@ -15,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/patrickbucher/meow"
+	"github.com/valkey-io/valkey-go"
 )
 
 // Config maps the identifiers to endpoints.
@@ -35,6 +37,28 @@ func main() {
 	flag.Parse()
 
 	log.SetOutput(os.Stderr)
+
+	// Read Valkey address from environment
+	valkeyURL, ok := os.LookupEnv("VALKEY_URL")
+	if !ok || valkeyURL == "" {
+		log.Fatal("VALKEY_URL environment variable is not set")
+	}
+
+	ctx := context.Background()
+	options := valkey.ClientOption{
+		InitAddress: []string{valkeyURL},
+		SelectDB:    44, // DB number
+	}
+
+	vk, err := valkey.NewClient(options)
+	if err != nil {
+		log.Fatalf("failed to create valkey client: %v", err)
+	}
+
+	if err := vk.Do(ctx, vk.B().Ping().Build()).Error(); err != nil {
+		log.Fatalf("valkey ping failed: %v", err)
+	}
+	log.Printf("connected to valkey at %s", valkeyURL)
 
 	cfg.config = mustReadConfig(*file)
 
